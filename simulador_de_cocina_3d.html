@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Cocina 3D</title>
+    <!-- Cargamos Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Cargamos Tailwind para la interfaz -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #87CEEB; /* Color cielo de fondo */
+            font-family: 'Inter', sans-serif;
+        }
+        #game-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Deja que los clics pasen al canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .ui-panel {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            pointer-events: auto; /* Para permitir clics en botones si hay */
+        }
+        #message-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 30px;
+            border-radius: 20px;
+            text-align: center;
+            display: none;
+            z-index: 20;
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Capa de Interfaz de Usuario -->
+    <div id="ui-layer">
+        <div class="flex justify-between w-full">
+            <div class="ui-panel max-w-sm">
+                <h1 class="text-2xl font-bold text-gray-800 mb-2">🧑‍🍳 Cocina 3D V2</h1>
+                <p class="text-sm text-gray-600 mb-2"><strong>Nivel:</strong> <span id="level-display" class="text-blue-600 font-bold text-lg">1</span> | <strong>Progreso:</strong> <span id="progress-display" class="text-green-600 font-bold text-lg">0/1</span></p>
+                <div class="flex gap-2 mb-2">
+                    <button onclick="serveOrder()" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded shadow transition transform hover:scale-105">🛎️ Servir</button>
+                    <button onclick="throwToTrash()" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded shadow transition transform hover:scale-105">🗑️ Limpiar Plato</button>
+                </div>
+                <p class="text-xs text-gray-500 mt-2">Haz clic en los ingredientes al fondo para tomarlos. Usa el sartén o la tabla para prepararlos y arma el pedido en el plato. Clic al aire para soltar.</p>
+            </div>
+            
+            <div class="ui-panel max-w-sm">
+                <h2 class="text-xl font-bold text-blue-700 mb-2">📝 Pedido Actual</h2>
+                <h3 id="order-name" class="text-md font-bold text-gray-800">Cargando...</h3>
+                <ul id="order-list" class="text-sm text-gray-600 list-disc pl-5 mt-1 font-medium">
+                    <!-- Ingredientes del pedido -->
+                </ul>
+            </div>
+        </div>
+        
+        <div class="ui-panel self-center mb-4 mt-auto">
+            <p class="text-lg font-semibold text-blue-600" id="status-text">¡Bienvenido! Toma un ingrediente para empezar.</p>
+        </div>
+    </div>
+
+    <!-- Mensaje Flotante -->
+    <div id="message-overlay">
+        <h2 id="message-title" class="text-4xl font-bold text-yellow-400 mb-4">¡Excelente! 🌟</h2>
+    </div>
+
+    <!-- Contenedor del Juego 3D -->
+    <canvas id="game-canvas"></canvas>
+
+    <script>
+        let scene, camera, renderer;
+        let raycaster, mouse;
+        let interactableObjects = [];
+        
+        // Variables de estado del juego
+        let selectedIngredient = null;
+        let plateStackHeight = 0.15;
+        let plateObjects = []; // Meshes en el plato
+        let currentPlate = []; // IDs en el plato
+        
+        let level = 1;
+        let ordersCompleted = 0;
+        let ordersNeeded = 1;
+        let isBossLevel = false;
+        
+        let currentOrder = null;
+        let isPlaying = true; // <-- Añadida para definir el estado del juego
+        
+        // Recetas disponibles
+        const RECIPES = [
+            { name: "Hamburguesa Clásica", ingredients: ['bun_bottom', 'meat_cooked', 'tomato_chopped', 'bun_top'] },
+            { name: "Cheeseburger", ingredients: ['bun_bottom', 'meat_cooked', 'cheese', 'bun_top'] },
+            { name: "Taco de Carne", ingredients: ['tortilla', 'meat_cooked', 'lettuce_chopped', 'tomato_chopped'] },
+            { name: "Taco Supremo", ingredients: ['tortilla', 'meat_cooked', 'cheese', 'lettuce_chopped', 'tomato_chopped'] },
+            { name: "Hamburguesa Doble", ingredients: ['bun_bottom', 'meat_cooked', 'cheese', 'meat_cooked', 'bun_top'] },
+            { name: "Hamburguesa de Pollo", ingredients: ['bun_bottom', 'chicken_cooked', 'lettuce_chopped', 'bun_top'] },
+            { name: "Bacon Cheeseburger", ingredients: ['bun_bottom', 'meat_cooked', 'cheese', 'bacon_cooked', 'bun_top'] },
+            { name: "Taco de Pollo", ingredients: ['tortilla', 'chicken_cooked', 'lettuce_chopped', 'tomato_chopped', 'cheese'] },
+            { name: "Ensalada Fresca", ingredients: ['lettuce_chopped', 'tomato_chopped', 'onion_chopped'] }
+        ];
+
+        const SPECIAL_RECIPES = [
+            { name: "👑 MEGA HAMBURGUESA IMPOSIBLE", ingredients: ['bun_bottom', 'meat_cooked', 'cheese', 'bacon_cooked', 'meat_cooked', 'cheese', 'chicken_cooked', 'onion_chopped', 'lettuce_chopped', 'tomato_chopped', 'bun_top'] },
+            { name: "👑 TACO TORRE SUPREMA", ingredients: ['tortilla', 'meat_cooked', 'chicken_cooked', 'bacon_cooked', 'cheese', 'onion_chopped', 'lettuce_chopped', 'tomato_chopped'] },
+            { name: "👑 BANQUETE CARNÍVORO", ingredients: ['bun_bottom', 'meat_cooked', 'bacon_cooked', 'chicken_cooked', 'meat_cooked', 'bacon_cooked', 'cheese', 'bun_top']}
+        ];
+
+        const INGREDIENT_NAMES = {
+            'bun_bottom': 'Pan Base', 'meat_cooked': 'Carne Cocinada', 'tomato_chopped': 'Tomate Picado',
+            'bun_top': 'Tapa de Pan', 'cheese': 'Queso Cheddar', 'lettuce_chopped': 'Lechuga Picada',
+            'tortilla': 'Tortilla', 'meat_raw': 'Carne Cruda', 'tomato_whole': 'Tomate Entero', 'lettuce_whole': 'Lechuga Entera',
+            'chicken_raw': 'Pollo Crudo', 'chicken_cooked': 'Pollo Cocinado', 'bacon_raw': 'Tocino Crudo', 
+            'bacon_cooked': 'Tocino Frito', 'onion_whole': 'Cebolla Entera', 'onion_chopped': 'Cebolla Picada'
+        };
+
+        // Elementos de UI
+        const statusText = document.getElementById('status-text');
+        const messageOverlay = document.getElementById('message-overlay');
+        const messageTitle = document.getElementById('message-title');
+
+        // Materiales mejorados
+        const materials = {
+            wood: new THREE.MeshStandardMaterial({ color: 0x6b4226, roughness: 0.9 }),
+            lightWood: new THREE.MeshStandardMaterial({ color: 0xc19a6b, roughness: 0.8 }),
+            metal: new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.3, metalness: 0.8 }),
+            stove: new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.5, metalness: 0.5 }),
+            plate: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1 }),
+            meatRaw: new THREE.MeshStandardMaterial({ color: 0xcc6666, roughness: 0.7 }),
+            meatCooked: new THREE.MeshStandardMaterial({ color: 0x4a2e15, roughness: 0.9 }),
+            chickenRaw: new THREE.MeshStandardMaterial({ color: 0xffe4e1, roughness: 0.5 }),
+            chickenCooked: new THREE.MeshStandardMaterial({ color: 0xd2a679, roughness: 0.6 }),
+            baconRaw: new THREE.MeshStandardMaterial({ color: 0xff9999, roughness: 0.6 }),
+            baconCooked: new THREE.MeshStandardMaterial({ color: 0x8b0000, roughness: 0.8 }),
+            tomato: new THREE.MeshStandardMaterial({ color: 0xff3333, roughness: 0.3 }),
+            lettuce: new THREE.MeshStandardMaterial({ color: 0x32cd32, roughness: 0.7 }),
+            onion: new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.5 }),
+            cheese: new THREE.MeshStandardMaterial({ color: 0xffa500, roughness: 0.5 }),
+            tortilla: new THREE.MeshStandardMaterial({ color: 0xf5deb3, roughness: 0.9 }),
+            bun: new THREE.MeshStandardMaterial({ color: 0xdaa520, roughness: 0.8 }),
+            wall: new THREE.MeshStandardMaterial({ color: 0xe6e6fa, roughness: 1.0 }),
+            floor: new THREE.MeshStandardMaterial({ color: 0x908a8a, roughness: 0.8 })
+        };
+
+        function init() {
+            const canvas = document.getElementById('game-canvas');
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 10, 11);
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Sombras más suaves y realistas
+            renderer.toneMapping = THREE.ACESFilmicToneMapping; // Mejores colores y contraste
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+            dirLight.position.set(5, 12, 8);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048; // Mayor resolución de sombras
+            dirLight.shadow.mapSize.height = 2048;
+            scene.add(dirLight);
+            
+            // Luz cálida para ambientar la cocina
+            const pointLight = new THREE.PointLight(0xffaa55, 0.5, 20);
+            pointLight.position.set(-4, 3, 2);
+            scene.add(pointLight);
+
+            createEnvironment();
+            createStations();
+            createIngredients();
+
+            generateOrder(); // Primer pedido
+
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('pointerdown', onPointerDown);
+
+            animate();
+        }
+
+        function createEnvironment() {
+            // Suelo
+            const floorGeo = new THREE.PlaneGeometry(50, 50);
+            const floor = new THREE.Mesh(floorGeo, materials.floor);
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.y = -3;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Pared trasera
+            const wallGeo = new THREE.PlaneGeometry(50, 25);
+            const wall = new THREE.Mesh(wallGeo, materials.wall);
+            wall.position.set(0, 7, -8);
+            wall.receiveShadow = true;
+            scene.add(wall);
+
+            // Mesa principal ampliada
+            const tableGeo = new THREE.BoxGeometry(24, 1, 8);
+            const table = new THREE.Mesh(tableGeo, materials.wood);
+            table.position.y = -0.5;
+            table.receiveShadow = true;
+            table.castShadow = true;
+            scene.add(table);
+            
+            // Estante de ingredientes en la pared
+            const shelfGeo = new THREE.BoxGeometry(22, 0.5, 3);
+            const shelf = new THREE.Mesh(shelfGeo, materials.wood);
+            shelf.position.set(0, 3, -6);
+            shelf.receiveShadow = true;
+            shelf.castShadow = true;
+            scene.add(shelf);
+        }
+
+        function createStations() {
+            // Sartén (Estación de cocción)
+            const stoveGeo = new THREE.BoxGeometry(3, 0.5, 3);
+            const stove = new THREE.Mesh(stoveGeo, materials.stove);
+            stove.position.set(-4, 0.25, 2);
+            scene.add(stove);
+
+            const panGeo = new THREE.CylinderGeometry(1.2, 1, 0.2, 32);
+            const pan = new THREE.Mesh(panGeo, materials.metal);
+            pan.position.set(-4, 0.6, 2);
+            pan.castShadow = true;
+            pan.userData = { type: 'station', action: 'cook', name: 'Sartén' };
+            scene.add(pan);
+            interactableObjects.push(pan);
+
+            // Tabla de picar (Estación de corte)
+            const boardGeo = new THREE.BoxGeometry(2.5, 0.1, 2);
+            const board = new THREE.Mesh(boardGeo, materials.lightWood);
+            board.position.set(4, 0.05, 2);
+            board.castShadow = true;
+            board.userData = { type: 'station', action: 'chop', name: 'Tabla de Picar' };
+            scene.add(board);
+            interactableObjects.push(board);
+
+            // Plato (Estación de ensamblaje)
+            const plateGeo = new THREE.CylinderGeometry(1.5, 1.2, 0.1, 32);
+            const plate = new THREE.Mesh(plateGeo, materials.plate);
+            plate.position.set(0, 0.05, 2);
+            plate.receiveShadow = true;
+            plate.userData = { type: 'station', action: 'assemble', name: 'Plato' };
+            scene.add(plate);
+            interactableObjects.push(plate);
+        }
+
+        function createIngredients() {
+            // Función auxiliar para agregar dispensadores ordenadamente
+            function addDispenser(geo, mat, userData, x, y, z) {
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(x, y + 0.5, z);
+                mesh.castShadow = true;
+                mesh.userData = { ...userData, isDispenser: true, type: 'ingredient' };
+                scene.add(mesh);
+                interactableObjects.push(mesh);
+                
+                // Base decorativa de metal
+                const baseGeo = new THREE.CylinderGeometry(1.2, 1.2, 0.1, 16);
+                const base = new THREE.Mesh(baseGeo, materials.metal);
+                base.position.set(x, y + 0.05, z);
+                base.receiveShadow = true;
+                scene.add(base);
+                
+                return mesh;
+            }
+
+            // Fila 1: Estante superior (Carnes y vegetales crudos)
+            const shelfY = 3;
+            const shelfZ = -6;
+            
+            addDispenser(new THREE.BoxGeometry(1.2, 0.2, 1.2), materials.meatRaw, { 
+                id: 'meat_raw', name: 'Carne Cruda', processed: false, targetStation: 'cook', resultId: 'meat_cooked', resultName: 'Carne Cocinada', heightOffset: 0.2
+            }, -8, shelfY, shelfZ);
+            
+            addDispenser(new THREE.BoxGeometry(1.0, 0.3, 1.0), materials.chickenRaw, { 
+                id: 'chicken_raw', name: 'Pollo Crudo', processed: false, targetStation: 'cook', resultId: 'chicken_cooked', resultName: 'Pollo Cocinado', heightOffset: 0.25
+            }, -4.5, shelfY, shelfZ);
+
+            addDispenser(new THREE.BoxGeometry(1.4, 0.1, 0.6), materials.baconRaw, { 
+                id: 'bacon_raw', name: 'Tocino Crudo', processed: false, targetStation: 'cook', resultId: 'bacon_cooked', resultName: 'Tocino Frito', heightOffset: 0.1
+            }, -1, shelfY, shelfZ);
+
+            addDispenser(new THREE.SphereGeometry(0.5, 32, 32), materials.tomato, {
+                id: 'tomato_whole', name: 'Tomate Entero', processed: false, targetStation: 'chop', resultId: 'tomato_chopped', resultName: 'Tomate Picado', heightOffset: 0.2
+            }, 2.5, shelfY, shelfZ);
+
+            addDispenser(new THREE.SphereGeometry(0.6, 32, 32), materials.lettuce, {
+                id: 'lettuce_whole', name: 'Lechuga Entera', processed: false, targetStation: 'chop', resultId: 'lettuce_chopped', resultName: 'Lechuga Picada', heightOffset: 0.2
+            }, 6, shelfY, shelfZ);
+            
+            addDispenser(new THREE.SphereGeometry(0.4, 16, 16), materials.onion, {
+                id: 'onion_whole', name: 'Cebolla Entera', processed: false, targetStation: 'chop', resultId: 'onion_chopped', resultName: 'Cebolla Picada', heightOffset: 0.15
+            }, 9.5, shelfY, shelfZ);
+
+            // Fila 2: Mesa al fondo (Panes, Queso, Tortilla listos para usar)
+            const tableY = 0;
+            const tableZ = -3;
+
+            addDispenser(new THREE.BoxGeometry(1.2, 0.05, 1.2), materials.cheese, {
+                id: 'cheese', name: 'Queso Cheddar', processed: true, heightOffset: 0.05
+            }, -4, tableY, tableZ);
+
+            addDispenser(new THREE.CylinderGeometry(1.4, 1.4, 0.05, 32), materials.tortilla, {
+                id: 'tortilla', name: 'Tortilla', processed: true, heightOffset: 0.05
+            }, 0, tableY, tableZ);
+
+            addDispenser(new THREE.CylinderGeometry(1.1, 1.1, 0.3, 32), materials.bun, {
+                id: 'bun_bottom', name: 'Pan Base', processed: true, heightOffset: 0.3
+            }, 4, tableY, tableZ);
+
+            const bunTop = addDispenser(new THREE.SphereGeometry(1.1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), materials.bun, {
+                id: 'bun_top', name: 'Tapa de Pan', processed: true, heightOffset: 0.4
+            }, 8, tableY, tableZ);
+            bunTop.scale.set(1, 0.6, 1);
+        }
+
+        function generateOrder() {
+            isBossLevel = (level % 5 === 0);
+            
+            if (isBossLevel) {
+                ordersNeeded = 1;
+                const randomIndex = Math.floor(Math.random() * SPECIAL_RECIPES.length);
+                currentOrder = SPECIAL_RECIPES[randomIndex];
+            } else {
+                ordersNeeded = level; // El número de pedidos para pasar equivale al nivel actual
+                const randomIndex = Math.floor(Math.random() * RECIPES.length);
+                currentOrder = RECIPES[randomIndex];
+            }
+            
+            const orderNameEl = document.getElementById('order-name');
+            orderNameEl.innerText = currentOrder.name;
+            
+            if (isBossLevel) {
+                orderNameEl.className = "text-lg font-bold text-purple-600 animate-pulse";
+            } else {
+                orderNameEl.className = "text-md font-bold text-gray-800";
+            }
+            
+            document.getElementById('level-display').innerText = level;
+            document.getElementById('progress-display').innerText = `${ordersCompleted}/${ordersNeeded}`;
+            
+            const list = document.getElementById('order-list');
+            list.innerHTML = '';
+            currentOrder.ingredients.forEach(ingId => {
+                const li = document.createElement('li');
+                li.innerText = INGREDIENT_NAMES[ingId] || ingId;
+                list.appendChild(li);
+            });
+        }
+
+        function onPointerDown(event) {
+            // Prevenir interacción si hay un mensaje de éxito activo
+            if (messageOverlay.style.display === 'block') return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(interactableObjects);
+
+            if (intersects.length > 0) {
+                handleInteraction(intersects[0].object);
+            } else {
+                // Soltar ingrediente en el aire (descartar)
+                if (selectedIngredient) {
+                    scene.remove(selectedIngredient);
+                    selectedIngredient = null;
+                    statusText.innerText = "Ingrediente descartado.";
+                    statusText.className = "text-lg font-semibold text-gray-500";
+                }
+            }
+        }
+
+        function serveOrder() {
+            if (currentPlate.length === 0) {
+                statusText.innerText = "¡El plato está vacío!";
+                return;
+            }
+
+            let isMatch = true;
+            if (currentPlate.length !== currentOrder.ingredients.length) {
+                isMatch = false;
+            } else {
+                for (let i = 0; i < currentOrder.ingredients.length; i++) {
+                    if (currentPlate[i] !== currentOrder.ingredients[i]) {
+                        isMatch = false;
+                        break;
+                    }
+                }
+            }
+
+            if (isMatch) {
+                ordersCompleted++;
+                
+                if (ordersCompleted >= ordersNeeded) {
+                    level++;
+                    ordersCompleted = 0;
+                    messageTitle.innerText = `¡NIVEL COMPLETADO! 🚀 Subes al Nivel ${level}`;
+                } else {
+                    messageTitle.innerText = "¡Pedido Perfecto! +1";
+                }
+                
+                document.getElementById('level-display').innerText = level;
+                document.getElementById('progress-display').innerText = `${ordersCompleted}/${ordersNeeded}`;
+                statusText.innerText = "¡Pedido servido!";
+                
+                messageOverlay.style.display = 'block';
+                
+                setTimeout(() => { 
+                    messageOverlay.style.display = 'none'; 
+                    throwToTrash(); // Limpiar plato internamente
+                    generateOrder(); // Nuevo cliente
+                }, 2500);
+
+            } else {
+                statusText.innerText = "El pedido es incorrecto. Tíralo a la basura y repite.";
+                statusText.className = "text-lg font-bold text-red-600";
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (!isPlaying) {
+                // Modo Cinemático: cámara gira automáticamente alrededor de la cocina
+                const time = Date.now() * 0.0004;
+                camera.position.x = Math.sin(time) * 12;
+                camera.position.z = Math.cos(time) * 12;
+                camera.position.y = 8;
+                camera.lookAt(0, 2, -2);
+            } else {
+                // Modo Juego: Cámara estática principal
+                camera.position.set(0, 10, 11);
+                camera.lookAt(0, 0, 0);
+            }
+
+            if (selectedIngredient && selectedIngredient.position.y > 1) {
+                selectedIngredient.rotation.y += 0.03;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
